@@ -54,3 +54,65 @@ jobs:
           DB_CONNECTION: sqlite
           DB_DATABASE: database/database.sqlite
         run: php artisan test -q
+
+  # Job responsable de la Entrega Continua (CD): solo se ejecuta si el job 'test' finaliza en verde.
+  continuous-delivery:
+    # Nombre legible del job que aparecerá en la UI de Actions.
+    name: Continuous Delivery
+
+    runs-on: ubuntu-latest
+
+    # Encadena la ejecución: este job depende de que 'test' termine con éxito (CI → CD).
+    needs: test
+
+    permissions:
+      contents: read
+
+    steps:
+      # Recupera el estado del repositorio en el runner para empaquetar exactamente la revisión validada.
+      - uses: actions/checkout@v4
+
+      # Prepara el entorno de PHP con la versión y extensiones requeridas para construir el artefacto.
+      - name: Setup PHP 8.2
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, intl, bcmath, dom, curl, fileinfo, json
+          coverage: none
+
+      # Instala las dependencias del proyecto con Composer para habilitar el autoload
+      # y los comandos de Artisan. Evita errores por clases/facades ausentes antes
+      # de preparar el archivo .env y continuar con el empaquetado.
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+
+      # Asegura la presencia del archivo de configuración .env (solo para fines del taller).
+      # En entornos reales, gestionar variables mediante 'secrets' y 'environments'.
+      - name: Copiar .env
+        run: php -r "file_exists('.env') || copy('.env.example', '.env');"
+
+      # Genera la APP_KEY requerida por Laravel para ejecutar comandos y construir el paquete.
+      - name: Generar APP_KEY
+        run: php artisan key:generate
+
+      # Instala dependencias de Composer (con caché) para incluir 'vendor' en el artefacto final.
+      - name: Composer install (cached)
+        uses: ramsey/composer-install@v3
+        with:
+          composer-options: --no-progress --prefer-dist --optimize-autoloader
+
+      # Empaqueta la aplicación en un archivo .zip listo para entregar (CD = siempre listo para liberar).
+      # Nota: Incluye 'vendor' y '.env' solo para el laboratorio; en producción, considera excluirlos.
+      - name: Package app (zip)
+        run: |
+          zip -r laravel-build.zip \
+            app bootstrap config database public resources routes vendor \
+            artisan composer.json composer.lock .env
+
+      # Publica el artefacto en el run de GitHub Actions para su descarga y auditoría (trazabilidad).
+      - name: Upload artifact (laravel-build)
+        uses: actions/upload-artifact@v4
+        with:
+          name: laravel-build
+          path: laravel-build.zip
+          if-no-files-found: error
